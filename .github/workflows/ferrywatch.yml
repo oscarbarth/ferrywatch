@@ -2,35 +2,53 @@ name: ferrywatch
 
 # Bevakar fordonsplatser pa Eckerolinjen 20/9 kl 13:30, Eckero -> Grisslehamn.
 #
-# Varfor det ser ut sa har:
+# ---------------------------------------------------------------------------
+# Varfor schemat ser konstigt ut
+# ---------------------------------------------------------------------------
 #
-# GitHubs "schedule" accepterar inte tatare an var 5:e minut, och kor dessutom
-# best effort - slottar hoppas over helt vid hog last. Att lita pa hur ofta
-# GitHub STARTAR jobbet ger darfor oparlitlig bevakning.
+# Observerat 2026-09-14: repot skapades 06:53, workflowen fick sitt innehall
+# 07:04. Fram till 08:05 startade GitHubs schemalaggare INTE en enda korning,
+# trots cron "*/5 * * * *" - alltsa tolv missade slottar i rad. Kontrollerat
+# att det inte var felkonfiguration: workflowens tillstand var "active",
+# repot publikt och oarkiverat, filen lag pa standardgrenen main, cron-
+# uttrycket giltigt, Actions tillatet, manuella korningar gick igenom, och
+# githubstatus.com rapporterade Actions som operational utan incidenter.
 #
-# Losningen ar att inte lita pa startfrekvensen alls. Varje jobb pollar
-# kontinuerligt i upp till 25 minuter i stallet for att gora ett par stickprov
-# och do. cancel-in-progress ser till att en ny start ersatter den gamla, sa
-# det finns alltid exakt en pollare vid liv. Kommer schemat igang i tid byts
-# pollaren ut var 5:e minut; drojer GitHub en kvart fortsatter den som redan
-# kor att kolla under tiden.
+# Slutsats: GitHubs "schedule" ar best effort och gar inte att lita pa som
+# taktgivare. Konstruktionen bygger darfor inte pa hur ofta GitHub STARTAR
+# jobbet, utan pa hur lange varje jobb LEVER.
+#
+#   - Varje korning pollar kontinuerligt i upp till en timme.
+#   - Schemat forsoker tre ganger i timmen, pa udda minuter. Jamna
+#     femminutersslag ar de mest overbelastade hos GitHub.
+#   - cancel-in-progress gor att en ny start ersatter den gamla, sa det
+#     finns alltid hogst en pollare - och minst en sa lange nagon trigger
+#     nar fram nagon gang per timme.
+#
+# Foljden: tidigare kravdes en trafff var 5:e minut for obruten bevakning.
+# Nu racker en traff i timmen. Missar schemat tva av tre forsok spelar det
+# ingen roll.
+#
+# Den lokala bevakaren (ferrywatch-lokal.py) ar oberoende av allt det har
+# och ar det som faktiskt garanterar takten.
+# ---------------------------------------------------------------------------
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
-  workflow_dispatch:        # gor att du kan trycka "Run workflow" manuellt
+    - cron: "7,27,47 * * * *"
+  workflow_dispatch:
 
 permissions:
-  contents: write           # behovs for att spara state.json mellan korningar
+  contents: write
 
 concurrency:
   group: ferrywatch
-  cancel-in-progress: true  # en ny start tar over efter den gamla
+  cancel-in-progress: true
 
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 70
 
     env:
       ROUTE: EG
@@ -44,7 +62,7 @@ jobs:
       REMIND_MINUTES: "30"
       HEARTBEAT_HOURS: "6"
       STATE_FILE: state.json
-      LOG_FILE: ""            # tomt = logga bara till jobbloggen
+      LOG_FILE: ""
       NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
 
     steps:
@@ -58,12 +76,14 @@ jobs:
             exit 1
           fi
 
-      # timeout ger exit 124 nar tiden ar ute, vilket ar ett normalt slut har.
+      # timeout ger exit 124 nar timmen ar ute, vilket ar ett normalt slut har.
       # Skriptet sparar state efter varje kontroll, sa ett avbrott mitt i
       # forlorar pa sin hojd den sista avlasningen.
-      - name: Bevaka kontinuerligt
-        run: timeout 1500 python3 ferrywatch.py --loop || true
+      - name: Bevaka kontinuerligt i upp till en timme
+        run: timeout 3600 python3 ferrywatch.py --loop || true
 
+      # always() kor aven nar jobbet avbryts av en ny start, sa state hinner
+      # sparas innan den gamla pollaren ersatts.
       - name: Spara state
         if: always()
         run: |
