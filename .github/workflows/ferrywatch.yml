@@ -1,1 +1,76 @@
+name: ferrywatch
 
+# Bevakar fordonsplatser pa Eckerolinjen 20/9 kl 13:30, Eckero -> Grisslehamn.
+#
+# GitHub kor schemalagda jobb med "best effort". Var 5:e minut ar det tataste
+# som tillats, och vid hog last kan en korning skjutas upp nagra minuter.
+# Darfor kor vi tva kontroller per jobb med 150 sekunders mellanrum, vilket i
+# praktiken ger ungefar en avlasning varannan till var tredje minut.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:        # gor att du kan trycka "Run workflow" manuellt
+
+permissions:
+  contents: write           # behovs for att spara state.json mellan korningar
+
+concurrency:
+  group: ferrywatch         # aldrig tva korningar samtidigt
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    env:
+      ROUTE: EG
+      DATE: "2026-09-20"
+      TIME: "13:30"
+      ROUTE_LABEL: "Eckero -> Grisslehamn"
+      WATCH_GROUP: vehicles
+      ALERT_ON: "low,high"
+      REMIND_MINUTES: "30"
+      HEARTBEAT_HOURS: "24"
+      STATE_FILE: state.json
+      LOG_FILE: ""            # tomt = logga bara till jobbloggen
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kontrollera att larmkanalen ar konfigurerad
+        run: |
+          if [ -z "$NTFY_TOPIC" ]; then
+            echo "::error::Hemligheten NTFY_TOPIC saknas. Lagg till den under"
+            echo "::error::Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+      - name: Kontroll 1
+        run: python3 ferrywatch.py
+
+      - name: Vanta
+        run: sleep 150
+
+      - name: Kontroll 2
+        run: python3 ferrywatch.py
+
+      - name: Spara state
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name  "ferrywatch"
+            git config user.email "ferrywatch@users.noreply.github.com"
+            git add state.json
+            git commit -m "state: $(python3 -c "import json;s=json.load(open('state.json'));print(s.get('status','?'), s.get('max_capacity','?'))")"
+            # Rebase mot fjarren ifall en tidigare korning hann före
+            for i in 1 2 3; do
+              git pull --rebase --autostash && git push && break
+              echo "Push-forsok $i misslyckades, provar igen"
+              sleep 5
+            done
+          else
+            echo "Ingen forandring i state.json"
+          fi
