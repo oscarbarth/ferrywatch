@@ -2,10 +2,18 @@ name: ferrywatch
 
 # Bevakar fordonsplatser pa Eckerolinjen 20/9 kl 13:30, Eckero -> Grisslehamn.
 #
-# GitHub kor schemalagda jobb med "best effort". Var 5:e minut ar det tataste
-# som tillats, och vid hog last kan en korning skjutas upp nagra minuter.
-# Darfor kor vi tva kontroller per jobb med 150 sekunders mellanrum, vilket i
-# praktiken ger ungefar en avlasning varannan till var tredje minut.
+# Varfor det ser ut sa har:
+#
+# GitHubs "schedule" accepterar inte tatare an var 5:e minut, och kor dessutom
+# best effort - slottar hoppas over helt vid hog last. Att lita pa hur ofta
+# GitHub STARTAR jobbet ger darfor oparlitlig bevakning.
+#
+# Losningen ar att inte lita pa startfrekvensen alls. Varje jobb pollar
+# kontinuerligt i upp till 25 minuter i stallet for att gora ett par stickprov
+# och do. cancel-in-progress ser till att en ny start ersatter den gamla, sa
+# det finns alltid exakt en pollare vid liv. Kommer schemat igang i tid byts
+# pollaren ut var 5:e minut; drojer GitHub en kvart fortsatter den som redan
+# kor att kolla under tiden.
 
 on:
   schedule:
@@ -16,23 +24,25 @@ permissions:
   contents: write           # behovs for att spara state.json mellan korningar
 
 concurrency:
-  group: ferrywatch         # aldrig tva korningar samtidigt
-  cancel-in-progress: false
+  group: ferrywatch
+  cancel-in-progress: true  # en ny start tar over efter den gamla
 
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 30
 
     env:
       ROUTE: EG
       DATE: "2026-09-20"
       TIME: "13:30"
-      ROUTE_LABEL: "Eckero -> Grisslehamn"
+      ROUTE_LABEL: "Eckerö → Grisslehamn (GitHub)"
       WATCH_GROUP: vehicles
       ALERT_ON: "low,high"
+      INTERVAL_SECONDS: "90"
+      JITTER_SECONDS: "15"
       REMIND_MINUTES: "30"
-      HEARTBEAT_HOURS: "24"
+      HEARTBEAT_HOURS: "6"
       STATE_FILE: state.json
       LOG_FILE: ""            # tomt = logga bara till jobbloggen
       NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
@@ -48,14 +58,11 @@ jobs:
             exit 1
           fi
 
-      - name: Kontroll 1
-        run: python3 ferrywatch.py
-
-      - name: Vanta
-        run: sleep 150
-
-      - name: Kontroll 2
-        run: python3 ferrywatch.py
+      # timeout ger exit 124 nar tiden ar ute, vilket ar ett normalt slut har.
+      # Skriptet sparar state efter varje kontroll, sa ett avbrott mitt i
+      # forlorar pa sin hojd den sista avlasningen.
+      - name: Bevaka kontinuerligt
+        run: timeout 1500 python3 ferrywatch.py --loop || true
 
       - name: Spara state
         if: always()
@@ -64,8 +71,7 @@ jobs:
             git config user.name  "ferrywatch"
             git config user.email "ferrywatch@users.noreply.github.com"
             git add state.json
-            git commit -m "state: $(python3 -c "import json;s=json.load(open('state.json'));print(s.get('status','?'), s.get('max_capacity','?'))")"
-            # Rebase mot fjarren ifall en tidigare korning hann före
+            git commit -m "state: $(python3 -c "import json;s=json.load(open('state.json'));print(s.get('status','?'), 'bokningsbar='+str(s.get('bookable','?')))")"
             for i in 1 2 3; do
               git pull --rebase --autostash && git push && break
               echo "Push-forsok $i misslyckades, provar igen"
