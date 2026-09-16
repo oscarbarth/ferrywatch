@@ -1,10 +1,10 @@
 {
   "status": "empty",
   "bookable": false,
-  "max_capacity": 0.97,
-  "last_check": "2026-09-16T18:10:57.643708+00:00",
+  "max_capacity": 0.0,
+  "last_check": "2026-09-16T21:19:00.656253+00:00",
   "was_open": false,
-  "last_heartbeat": "2026-09-16T12:28:42.592750+00:00",
+  "last_heartbeat": "2026-09-16T20:20:07.321495+00:00",
   "fail_streak": 0,
   "breakage_notified": false
 }
